@@ -1,0 +1,9 @@
+/target/
+Cargo.lock.bak
+weights/*.bin
+tests_fixtures/
+acceptance_evidence/
+__pycache__/
+*.pyc
+*.log
+tests/fixtures/

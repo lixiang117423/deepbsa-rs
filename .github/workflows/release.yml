@@ -1,0 +1,44 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl   # 静态链接，任意 Linux 可直接运行
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          dir="deepbsa-${{ matrix.target }}"
+          mkdir -p "$dir"
+          cp "target/${{ matrix.target }}/release/deepbsa" "$dir/"
+          cp README.md LICENSE "$dir/"
+          printf '本包不含模型权重（版权原因）。\n请从 https://github.com/lizhao007/DeepBSA 获取原版后运行:\n  python scripts/convert_weights.py <DeepBSA>/bin/Models weights/\n(脚本见仓库 scripts/convert_weights.py，需 pip install h5py)\n' > "$dir/WEIGHTS_NOTICE.txt"
+          tar czf "$dir.tar.gz" "$dir"
+          (sha256sum "$dir.tar.gz" 2>/dev/null || shasum -a 256 "$dir.tar.gz") > "$dir.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            deepbsa-*.tar.gz
+            deepbsa-*.sha256

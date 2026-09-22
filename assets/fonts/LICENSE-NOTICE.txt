@@ -1,0 +1,3 @@
+DejaVu Sans fonts (DejaVuSans.ttf, DejaVuSans-Bold.ttf)
+License: DejaVu Fonts License (Bitstream Vera License + Public Domain additions),
+free for redistribution and embedding. https://dejavu-fonts.github.io/

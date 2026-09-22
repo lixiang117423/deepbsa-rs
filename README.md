@@ -85,11 +85,11 @@ python scripts/convert_weights.py <DeepBSA目录>/bin/Models weights/
 参数与原版 `main.py` / `simulate_progress.py` 一致（额外多一个 `plot` 子命令）：
 
 ```bash
-# QTL mapping
-deepbsa map --i input.vcf.gz --m DL --p 0 --s Tri-kernel-smooth --w 0.1
+# QTL mapping（默认一次跑完 7 种方法）
+deepbsa map --i input.vcf.gz --p 0 --s Tri-kernel-smooth --w 0.1
 
-# 参数（默认值同原版）
-#   --m  DL|K|ED4|SNP|SmoothG|SmoothLOD|Ridit   统计算法（默认 DL）
+# 参数（默认值同原版，--m 除外）
+#   --m  all | 逗号组合（如 DL,K）              默认 all 运行全部 7 种
 #   --p  1                                      是否预处理（1/0）
 #   --p1 0    --p2 1    --p3 1                  三步预处理参数
 #   --s  LOWESS                                 Tri-kernel-smooth | LOWESS | Moving Average

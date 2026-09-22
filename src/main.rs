@@ -43,8 +43,8 @@ struct MapArgs {
     /// 输入文件路径 (vcf/csv)
     #[arg(long = "i", required = true)]
     input: String,
-    /// 统计算法: DL/K/ED4/SNP/SmoothG/SmoothLOD/Ridit
-    #[arg(long = "m", default_value = "DL")]
+    /// 统计算法: all 或逗号组合（如 DL,K）。默认 all 运行全部 7 种
+    #[arg(long = "m", default_value = "all")]
     method: String,
     /// 是否预处理 (1/0)
     #[arg(long = "p", default_value = "1")]
@@ -156,24 +156,59 @@ fn run_map(args: MapArgs) -> Result<()> {
     let save_path = rsp.join(&file_name);
     std::fs::create_dir_all(&save_path)?;
 
-    run_statistic(&args, &dataset, &save_path)
-}
-
-/// 对齐 Statistic.run
-fn run_statistic(args: &MapArgs, dataset: &data::Dataset, save_path: &Path) -> Result<()> {
-    let auto_win = args.w == 0.0;
-    let num_pools = dataset.n_pools();
-    if num_pools == 0 {
-        bail!("no data after pretreatment");
-    }
-
-    // DL 模型按需加载（一次）
-    let model = if args.method == "DL" {
+    let methods = parse_methods(&args.method)?;
+    // DL 模型按需加载（一次，所有方法共享）
+    let model = if methods.contains(&"DL".to_string()) {
         let dir = dl::weights_dir(args.weights.as_ref().map(Path::new))?;
-        Some(dl::DLModel::load_for_pools(&dir, num_pools)?)
+        Some(dl::DLModel::load_for_pools(&dir, dataset.n_pools())?)
     } else {
         None
     };
+    for m in &methods {
+        println!("===== method: {m} =====");
+        run_one_method(m, &args, &dataset, &save_path, model.as_ref())?;
+    }
+    Ok(())
+}
+
+/// 解析 --m：支持 "all" 与逗号分隔组合（大小写不敏感，去重保序）
+fn parse_methods(spec: &str) -> Result<Vec<String>> {
+    const KNOWN: [&str; 7] = ["DL", "K", "ED4", "SNP", "SmoothG", "SmoothLOD", "Ridit"];
+    if spec.trim().eq_ignore_ascii_case("all") {
+        return Ok(KNOWN.iter().map(|s| s.to_string()).collect());
+    }
+    let mut out: Vec<String> = Vec::new();
+    for part in spec.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        let hit = KNOWN
+            .iter()
+            .find(|k| k.eq_ignore_ascii_case(p))
+            .ok_or_else(|| {
+                anyhow::anyhow!("未知方法 {p:?}；可用: all, {}", KNOWN.join("/"))
+            })?;
+        if !out.iter().any(|x| x == hit) {
+            out.push(hit.to_string());
+        }
+    }
+    if out.is_empty() {
+        bail!("--m 未解析出任何方法");
+    }
+    Ok(out)
+}
+
+/// 对齐 Statistic.run（单方法；模型由外层加载共享）
+fn run_one_method(
+    method: &str,
+    args: &MapArgs,
+    dataset: &data::Dataset,
+    save_path: &Path,
+    model: Option<&dl::DLModel>,
+) -> Result<()> {
+    let auto_win = args.w == 0.0;
+    let num_pools = dataset.n_pools();
 
     let n_chr = dataset.chrs.len();
     let mut all_percentile: Vec<f64> = Vec::new();
@@ -190,10 +225,10 @@ fn run_statistic(args: &MapArgs, dataset: &data::Dataset, save_path: &Path) -> R
             if chr.is_empty() {
                 return Ok(None);
             }
-            let values = if args.method == "DL" {
-                dl::dl_statistic(model.as_ref().unwrap(), &chr.freq)
+            let values = if method == "DL" {
+                dl::dl_statistic(model.expect("DL model"), &chr.freq)
             } else {
-                stats::compute(&args.method, &chr.freq, &chr.ref_a, &chr.mut_a, num_pools)?
+                stats::compute(method, &chr.freq, &chr.ref_a, &chr.mut_a, num_pools)?
             };
             let span = if auto_win {
                 let pos_mb: Vec<f64> = chr.pos.iter().map(|p| p / 1e6).collect();
@@ -251,7 +286,7 @@ fn run_statistic(args: &MapArgs, dataset: &data::Dataset, save_path: &Path) -> R
     let ymax = all_percentile.iter().cloned().fold(0.0f64, f64::max) * 1.01;
     let png_path = save_path.join(format!(
         "{}-{}-{}-{}-{}.png",
-        args.p1, args.method, args.s, window_str, threshold_str
+        args.p1, method, args.s, window_str, threshold_str
     ));
     plot::plot(&png_path, &panels, ymax, threshold_f)
         .with_context(|| format!("plot {}", png_path.display()))?;
@@ -260,7 +295,7 @@ fn run_statistic(args: &MapArgs, dataset: &data::Dataset, save_path: &Path) -> R
     // biopytools deepbsa merge 的 npy 快速路径依赖这两个文件）
     npy::write_f64_1d(
         &mut std::io::BufWriter::new(std::fs::File::create(
-            save_path.join(format!("all_data_for_percentile_{}.npy", args.method)),
+            save_path.join(format!("all_data_for_percentile_{method}.npy")),
         )?),
         &all_percentile,
     )?;
@@ -269,7 +304,7 @@ fn run_statistic(args: &MapArgs, dataset: &data::Dataset, save_path: &Path) -> R
         .collect();
     npy::write_object_ragged(
         &mut std::io::BufWriter::new(std::fs::File::create(
-            save_path.join(format!("all_data_for_plot_{}.npy", args.method)),
+            save_path.join(format!("all_data_for_plot_{method}.npy")),
         )?),
         &plot_rows,
     )?;
@@ -278,7 +313,7 @@ fn run_statistic(args: &MapArgs, dataset: &data::Dataset, save_path: &Path) -> R
         .collect();
     npy::write_object_ragged(
         &mut std::io::BufWriter::new(std::fs::File::create(
-            save_path.join(format!("smooth_data_for_plot_{}.npy", args.method)),
+            save_path.join(format!("smooth_data_for_plot_{method}.npy")),
         )?),
         &smooth_rows,
     )?;
@@ -287,7 +322,7 @@ fn run_statistic(args: &MapArgs, dataset: &data::Dataset, save_path: &Path) -> R
     {
         use std::io::Write;
         let mut f = std::io::BufWriter::new(std::fs::File::create(
-            save_path.join(format!("{} values.txt", args.method)),
+            save_path.join(format!("{method} values.txt")),
         )?);
         for flag in 0..n_chr {
             let (Some(plot_data), pos) = (&chr_plot[flag], &chr_pos_sorted[flag]) else {
@@ -318,7 +353,7 @@ fn run_statistic(args: &MapArgs, dataset: &data::Dataset, save_path: &Path) -> R
     );
     let csv_path = save_path.join(format!(
         "{}-{}-{}-{}-{}.csv",
-        args.p1, args.method, args.s, window_str, threshold_str
+        args.p1, method, args.s, window_str, threshold_str
     ));
     peaks::write_peaks_csv(&csv_path, &table)?;
 
@@ -331,7 +366,7 @@ fn run_statistic(args: &MapArgs, dataset: &data::Dataset, save_path: &Path) -> R
     let ci_map = ci::confidence_interval(&peaks_for_ci, &smooth_refs, &chr_pos_sorted, &dataset.chrome_set)?;
     let ci_val = serde_json::Value::Object(ci_map.into_iter().collect());
     ci::write_json(
-        &save_path.join(format!("{}_confidence_interval_data.json", args.method)),
+        &save_path.join(format!("{method}_confidence_interval_data.json")),
         &ci_val,
     )?;
 
